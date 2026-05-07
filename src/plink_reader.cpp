@@ -138,9 +138,10 @@ void PlinkReader::read_fam_(const std::string& fam_file) {
     while (std::getline(fin, line)) {
         if (line.empty()) continue;
         std::istringstream iss(line);
-        std::string fid;
-        iss >> fid;
-        sample_ids_.push_back(fid);
+        std::string fid, iid;
+        iss >> fid >> iid;
+        if (fid == iid) sample_ids_.push_back(fid);
+        else sample_ids_.push_back(fid + "_" + iid);
     }
     n_samples_ = static_cast<int>(sample_ids_.size());
 }

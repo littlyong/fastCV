@@ -55,7 +55,7 @@ static void my_dgemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE TransA,
 // When n is small enough, uses OpenMP parallel SNP processing
 // with per-thread G_local accumulators for speed.
 // ============================================================
-Eigen::MatrixXd compute_grm(const PlinkReader& reader,
+GrmResult compute_grm(const PlinkReader& reader,
                             const std::vector<int>& sample_idx,
                             int block_size,
                             int n_threads,
@@ -87,7 +87,7 @@ Eigen::MatrixXd compute_grm(const PlinkReader& reader,
     }
 
     Eigen::MatrixXd G = Eigen::MatrixXd::Zero(n, n);
-    if (maf_out) maf_out->resize(m);
+    if (maf_out) maf_out->setZero(m);
     double sigma2_sum = 0.0;
 
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -255,7 +255,10 @@ Eigen::MatrixXd compute_grm(const PlinkReader& reader,
               << " blocks done in " << std::chrono::duration<double>(t1 - t0).count() << "s\n"
               << std::flush;
 
-    return G;
+    GrmResult res;
+    res.G = std::move(G);
+    res.sigma2_sum = sigma2_sum;
+    return res;
 }
 
 // ============================================================
@@ -350,7 +353,7 @@ GrmAndCrossResult compute_grm_with_cross(
     GrmAndCrossResult result;
     result.G = Eigen::MatrixXd::Zero(n_train, n_train);
     if (has_test) result.G_cross = Eigen::MatrixXd::Zero(n_test, n_train);
-    result.maf.resize(m);
+    result.maf.setZero(m);
     double sigma2_sum = 0.0;
 
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -502,6 +505,7 @@ GrmAndCrossResult compute_grm_with_cross(
     // Normalize by Σ 2p(1-p)
     result.G /= sigma2_sum;
     if (has_test) result.G_cross /= sigma2_sum;
+    result.sigma2_sum = sigma2_sum;
 
 #ifdef FASTCV_USE_MKL
     mkl_free_buffers();
@@ -652,6 +656,7 @@ Eigen::MatrixXd project_test_pcs(const PlinkReader& reader,
             test_pcs += pcs_local[t];
         pcs_local.clear();
     } else {
+        Eigen::MatrixXd V_block(block_size, k);
         for (int s = 0; s < num_snps; s += block_size) {
             int end = std::min(s + block_size, num_snps);
             int bs = end - s;
@@ -661,19 +666,18 @@ Eigen::MatrixXd project_test_pcs(const PlinkReader& reader,
             reader.read_snp_block_dual(s, end, train_idx, test_idx,
                                        Z_train, Z_test, maf_block, true);
 
-            Eigen::MatrixXd V_block(bs, k);
             my_dgemm(CblasColMajor, CblasTrans, CblasNoTrans,
                      bs, k, n_train,
                      1.0,
                      Z_train.data(), n_train,
                      W.data(), n_train,
-                     0.0, V_block.data(), bs);
+                     0.0, V_block.data(), block_size);
 
             my_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
                      n_test, k, bs,
                      1.0,
                      Z_test.data(), n_test,
-                     V_block.data(), bs,
+                     V_block.data(), block_size,
                      1.0, test_pcs.data(), n_test);
 
             int cur_block = s / block_size + 1;

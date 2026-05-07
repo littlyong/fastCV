@@ -78,11 +78,13 @@ std::string init_train_val_residuals(
     int n_nested_folds);
 
 /// Append one column of residuals to train_val_residuals.txt.
+/// trait_suffix is appended to the column name (e.g. "_trait1" or "" for single-trait).
 void append_train_val_residual_column(
     const std::string& path,
     const std::vector<std::string>& sample_ids,
     const std::vector<int>& train_pool_idx,
     int nested_fold_idx,
-    const Eigen::VectorXd& residuals);
+    const Eigen::VectorXd& residuals,
+    const std::string& trait_suffix = "");
 
 } // namespace fastcv

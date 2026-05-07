@@ -12,13 +12,18 @@ namespace fastcv {
 /// @param n_threads   OpenMP threads (0 = auto)
 /// @param[out] maf_out  If non-null, filled with per-SNP MAF (m,)
 /// @param snp_idx  If non-null, only use these SNP indices (for LD-pruned GRM)
-/// @return n × n GRM matrix
-Eigen::MatrixXd compute_grm(const PlinkReader& reader,
-                            const std::vector<int>& sample_idx,
-                            int block_size = 1000,
-                            int n_threads = 0,
-                            Eigen::VectorXd* maf_out = nullptr,
-                            const std::vector<int>* snp_idx = nullptr);
+/// @return {G, sigma2_sum}
+struct GrmResult {
+    Eigen::MatrixXd G;          // n × n GRM matrix
+    double sigma2_sum = 0.0;    // Σ 2p(1-p), used as GRM normalizer
+};
+
+GrmResult compute_grm(const PlinkReader& reader,
+                       const std::vector<int>& sample_idx,
+                       int block_size = 1000,
+                       int n_threads = 0,
+                       Eigen::VectorXd* maf_out = nullptr,
+                       const std::vector<int>* snp_idx = nullptr);
 
 /// Compute cross-GRM G_cross = Z_new Z_train' / m for two sample sets.
 /// Used for projecting test samples via G_cross · U · diag(sqrt(m/lambda)).
@@ -48,6 +53,7 @@ struct GrmAndCrossResult {
     Eigen::MatrixXd G;        // n_train × n_train
     Eigen::MatrixXd G_cross;  // n_test × n_train (empty if test_idx empty)
     Eigen::VectorXd maf;      // per-SNP MAF (m,)
+    double sigma2_sum = 0.0;  // Σ 2p(1-p), used as GRM normalizer
 };
 
 GrmAndCrossResult compute_grm_with_cross(

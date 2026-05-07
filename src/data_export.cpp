@@ -450,7 +450,8 @@ void append_train_val_residual_column(
     const std::vector<std::string>& sample_ids,
     const std::vector<int>& train_pool_idx,
     int nested_fold_idx,
-    const Eigen::VectorXd& residuals)
+    const Eigen::VectorXd& residuals,
+    const std::string& trait_suffix)
 {
     // Read existing content (header + previous columns)
     std::vector<std::string> lines;
@@ -462,7 +463,7 @@ void append_train_val_residual_column(
     }
 
     // Append new column to header
-    lines[0] += " nested_" + std::to_string(nested_fold_idx);
+    lines[0] += " nested_" + std::to_string(nested_fold_idx) + trait_suffix;
 
     // Append residual values to each data line (or add new lines if first column)
     int n_pool = static_cast<int>(train_pool_idx.size());

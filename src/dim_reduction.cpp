@@ -145,7 +145,7 @@ DimReductionResult GrmPcaDimReduction::fit(const PlinkReader& reader,
     Eigen::VectorXd maf;
     std::cout << "    [GRM] Computing " << n << "x" << n << " GRM from " << m << " SNPs...\n" << std::flush;
     auto t0 = std::chrono::high_resolution_clock::now();
-    Eigen::MatrixXd G = compute_grm(reader, sample_idx, grm_block_size_, n_threads, &maf);
+    auto grm_res = compute_grm(reader, sample_idx, grm_block_size_, n_threads, &maf);
     auto t1 = std::chrono::high_resolution_clock::now();
     double grm_time = std::chrono::duration<double>(t1 - t0).count();
     std::cout << "    [GRM] Done in " << grm_time << "s\n" << std::flush;
@@ -160,7 +160,7 @@ DimReductionResult GrmPcaDimReduction::fit(const PlinkReader& reader,
 
     Eigen::MatrixXd U(n, k);
     Eigen::VectorXd lambda(k);
-    eigendecompose(G, n, k, U, lambda);
+    eigendecompose(grm_res.G, n, k, U, lambda);
 
     // 3. Build result (MAF already computed during GRM pass)
     DimReductionResult result;
@@ -169,6 +169,7 @@ DimReductionResult GrmPcaDimReduction::fit(const PlinkReader& reader,
     result.eigenvectors = std::move(U);
     result.eigenvalues = std::move(lambda);
     fill_maf_params(maf, result);
+    result.sigma2_sum = grm_res.sigma2_sum;
 
     return result;
 }
@@ -223,20 +224,19 @@ GrmPcaDimReduction::FitTransformResult GrmPcaDimReduction::fit_and_transform(
     std::cout << "    [GRM] Computing " << n_train << "x" << n_train
               << " GRM from " << m << " SNPs...\n" << std::flush;
     auto t0 = std::chrono::high_resolution_clock::now();
-    Eigen::MatrixXd G = compute_grm(reader, train_idx, bs, n_threads, &maf);
+    auto grm_res = compute_grm(reader, train_idx, bs, n_threads, &maf);
     auto t1 = std::chrono::high_resolution_clock::now();
     std::cout << "    [GRM] Done in " << std::chrono::duration<double>(t1 - t0).count() << "s\n" << std::flush;
 
-    // Compute σ² from MAF (needed for V-based projection)
-    double sigma2_sum = 2.0 * (maf.array() * (1.0 - maf.array())).sum();
+    double sigma2_sum = grm_res.sigma2_sum;
 
     // === Eigendecomposition ===
     Eigen::MatrixXd U(n_train, k);
     Eigen::VectorXd lambda(k);
-    eigendecompose(G, n_train, k, U, lambda);
+    eigendecompose(grm_res.G, n_train, k, U, lambda);
 
     // Release G immediately — no longer needed after eigendecomposition
-    G = Eigen::MatrixXd();
+    grm_res.G = Eigen::MatrixXd();
 
     // === Build result ===
     FitTransformResult result;
@@ -302,8 +302,8 @@ GrmPcaDimReduction::FitTransformResult GrmPcaDimReduction::fit_and_transform_gcr
     std::cout << "    [GRM+Gx] Single pass done in "
               << std::chrono::duration<double>(t1 - t0).count() << "s\n" << std::flush;
 
-    // Compute σ² from MAF
-    double sigma2_sum = 2.0 * (grm_result.maf.array() * (1.0 - grm_result.maf.array())).sum();
+    // σ² from GRM pass (already computed correctly)
+    double sigma2_sum = grm_result.sigma2_sum;
 
     // === Eigendecomposition of G ===
     Eigen::MatrixXd U(n_train, k);

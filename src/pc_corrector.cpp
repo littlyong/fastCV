@@ -84,6 +84,23 @@ struct Timer {
 };
 
 // ============================================================
+// Internal helper: compute OLS hat matrix (X'X)^{-1} X'
+// LLT with SVD fallback for near-singular design matrices
+// ============================================================
+static Eigen::MatrixXd compute_ols_hat_matrix(const Eigen::MatrixXd& X) {
+    Eigen::MatrixXd XtX = X.transpose() * X;
+    Eigen::MatrixXd XtX_inv;
+    Eigen::LLT<Eigen::MatrixXd> llt(XtX);
+    if (llt.info() == Eigen::Success) {
+        XtX_inv = llt.solve(Eigen::MatrixXd::Identity(XtX.rows(), XtX.cols()));
+    } else {
+        Eigen::JacobiSVD<Eigen::MatrixXd> svd(XtX, Eigen::ComputeThinU | Eigen::ComputeThinV);
+        XtX_inv = svd.solve(Eigen::MatrixXd::Identity(XtX.rows(), XtX.cols()));
+    }
+    return XtX_inv * X.transpose();
+}
+
+// ============================================================
 // Internal helper: build design matrix X = [1, cov, geno_pcs, pheno_pcs]
 // ============================================================
 static Eigen::MatrixXd build_design_matrix(
@@ -697,16 +714,7 @@ CvResult prepare_cv_data(const CvConfig& config) {
             Eigen::MatrixXd X_test = build_design_matrix(shared.geno_pcs_test, pheno_pcs_test_ptr, cov_test_ptr);
 
             // Pre-compute (X'X)^{-1} X' for all traits at once
-            Eigen::MatrixXd XtX = X_train.transpose() * X_train;
-            Eigen::MatrixXd XtX_inv;
-            Eigen::LLT<Eigen::MatrixXd> llt(XtX);
-            if (llt.info() == Eigen::Success) {
-                XtX_inv = llt.solve(Eigen::MatrixXd::Identity(XtX.rows(), XtX.cols()));
-            } else {
-                Eigen::JacobiSVD<Eigen::MatrixXd> svd(XtX, Eigen::ComputeThinU | Eigen::ComputeThinV);
-                XtX_inv = svd.solve(Eigen::MatrixXd::Identity(XtX.rows(), XtX.cols()));
-            }
-            Eigen::MatrixXd XtX_inv_Xt = XtX_inv * X_train.transpose();
+            Eigen::MatrixXd XtX_inv_Xt = compute_ols_hat_matrix(X_train);
 
             // Collect per-trait fold results for this fold
             std::vector<FoldData> trait_folds(selected_traits.size());
@@ -875,16 +883,7 @@ CvResult prepare_cv_data(const CvConfig& config) {
                     }
 
                     // OLS for each trait: beta = (X'X)^{-1} X'y
-                    Eigen::MatrixXd XtX_nt = X_nt.transpose() * X_nt;
-                    Eigen::MatrixXd XtX_nt_inv;
-                    Eigen::LLT<Eigen::MatrixXd> llt_nt(XtX_nt);
-                    if (llt_nt.info() == Eigen::Success) {
-                        XtX_nt_inv = llt_nt.solve(Eigen::MatrixXd::Identity(XtX_nt.rows(), XtX_nt.cols()));
-                    } else {
-                        Eigen::JacobiSVD<Eigen::MatrixXd> svd_nt(XtX_nt, Eigen::ComputeThinU | Eigen::ComputeThinV);
-                        XtX_nt_inv = svd_nt.solve(Eigen::MatrixXd::Identity(XtX_nt.rows(), XtX_nt.cols()));
-                    }
-                    Eigen::MatrixXd XtX_inv_Xt_nt = XtX_nt_inv * X_nt.transpose();
+                    Eigen::MatrixXd XtX_inv_Xt_nt = compute_ols_hat_matrix(X_nt);
 
                     // Assemble PCs for all pool samples in pool order
                     Eigen::MatrixXd all_pcs(n_pool, X_nt.cols());
@@ -897,25 +896,26 @@ CvResult prepare_cv_data(const CvConfig& config) {
                             all_pcs.row(local_idx) = X_nv.row(row++);
                     }
 
-                    // Compute residuals for first trait and append to train_val_residuals.txt
-                    // (single-trait: each nested fold has one column)
+                    // Compute residuals for each trait and append to train_val_residuals.txt
                     {
-                        int trait = selected_traits[0];
                         Eigen::VectorXd y_pool(n_pool);
-                        for (int i = 0; i < n_pool; ++i)
-                            y_pool(i) = pheno_all_matched(split.train[i], trait);
-
                         Eigen::VectorXd y_nt(n_nt);
-                        for (int i = 0; i < n_nt; ++i)
-                            y_nt(i) = pheno_all_matched(nested_train_pheno[i], trait);
+                        for (size_t t = 0; t < selected_traits.size(); ++t) {
+                            int trait = selected_traits[t];
+                            for (int i = 0; i < n_pool; ++i)
+                                y_pool(i) = pheno_all_matched(split.train[i], trait);
+                            for (int i = 0; i < n_nt; ++i)
+                                y_nt(i) = pheno_all_matched(nested_train_pheno[i], trait);
 
-                        Eigen::VectorXd beta_nt = XtX_inv_Xt_nt * y_nt;
-                        Eigen::VectorXd residuals = y_pool - all_pcs * beta_nt;
+                            Eigen::VectorXd beta_nt = XtX_inv_Xt_nt * y_nt;
+                            Eigen::VectorXd residuals = y_pool - all_pcs * beta_nt;
 
-                        // Immediately append this column to the residuals file
-                        append_train_val_residual_column(
-                            residuals_path, export_ctx.sample_ids, split.train,
-                            nf + 1, residuals);
+                            std::string suffix = selected_traits.size() > 1
+                                ? ("_" + pheno.trait_names[trait]) : "";
+                            append_train_val_residual_column(
+                                residuals_path, export_ctx.sample_ids, split.train,
+                                nf + 1, residuals, suffix);
+                        }
                     }
 
                     // Export detail files immediately if requested
@@ -954,8 +954,6 @@ CvResult prepare_cv_data(const CvConfig& config) {
                     nested_dim.eigenvectors = Eigen::MatrixXd();
                     nested_dim.eigenvalues = Eigen::VectorXd();
                     nested_dim.maf = Eigen::VectorXd();
-                    XtX_nt = Eigen::MatrixXd();
-                    XtX_nt_inv = Eigen::MatrixXd();
                     XtX_inv_Xt_nt = Eigen::MatrixXd();
                 }
 
